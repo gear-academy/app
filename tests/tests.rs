@@ -1,6 +1,6 @@
 use gclient::{EventProcessor, GearApi, Result};
-use gstd::{prelude::*, ActorId};
-use gtest::{Log, Program, System};
+use gstd::{actor_id, prelude::*, ActorId};
+use gtest::{constants::UNITS, Log, Program, System};
 use std::fs;
 use template_io::*;
 
@@ -13,13 +13,17 @@ fn test() {
     let state_binary = get_state_binary();
     let program = Program::current(&system);
 
-    let mut result = program.send_bytes(2, []);
+    system.mint_to(2, UNITS * 100);
 
-    assert!(!result.main_failed());
+    let mut message_id = program.send_bytes(2, []);
+    let mut result = system.run_next_block();
 
-    result = program.send(2, PingPong::Pong);
+    assert!(result.succeed.contains(&message_id));
 
-    assert!(!result.main_failed());
+    message_id = program.send(2, PingPong::Pong);
+    result = system.run_next_block();
+
+    assert!(result.succeed.contains(&message_id));
 
     // State reading
 
@@ -29,9 +33,12 @@ fn test() {
 
     for mut actor in 0..=100 {
         actor += 2;
-        result = program.send(actor, PingPong::Ping);
+        system.mint_to(actor, 100 * UNITS);
+        message_id = program.send(actor, PingPong::Ping);
+        result = system.run_next_block();
 
         assert!(result.contains(&Log::builder().payload(PingPong::Pong)));
+        assert!(result.succeed.contains(&message_id));
 
         expected_state.push((actor.into(), 1))
     }
@@ -45,9 +52,11 @@ fn test() {
 
     // Querying `StateQuery::PingCount` from the `query` metafunction
 
-    result = program.send(2, PingPong::Ping);
+    message_id = program.send(2, PingPong::Ping);
+    result = system.run_next_block();
 
     assert!(result.contains(&Log::builder().payload(PingPong::Pong)));
+    assert!(result.succeed.contains(&message_id));
 
     let StateQueryReply::PingCount(ping_count) = program
         .read_state_using_wasm(
@@ -84,10 +93,8 @@ fn get_state_binary() -> Vec<u8> {
     fs::read("target/wasm32-unknown-unknown/debug/template_state.meta.wasm").unwrap()
 }
 
-const ALICE: [u8; 32] = [
-    212, 53, 147, 199, 21, 253, 211, 28, 97, 20, 26, 189, 4, 169, 159, 214, 130, 44, 133, 88, 133,
-    76, 205, 227, 154, 86, 132, 231, 165, 109, 162, 125,
-];
+const ALICE: ActorId =
+    actor_id!("0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d");
 
 #[tokio::test]
 async fn gclient_test() -> Result<()> {
@@ -140,13 +147,13 @@ async fn gclient_test() -> Result<()> {
                 vec![],
                 "query",
                 state_binary.clone(),
-                Some(StateQuery::PingCount(ActorId::from(ALICE)))
+                Some(StateQuery::PingCount(ALICE))
             )
             .await?
     );
 
     assert_eq!(
-        StateQueryReply::Pingers(vec![ALICE.into()]),
+        StateQueryReply::Pingers(vec![ALICE]),
         client
             .read_state_using_wasm(
                 program_id,
